@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nome</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #111; overflow: hidden; font-family: sans-serif; }
+        #status {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+            color: #ccc; font-size: 14px; text-align: center; line-height: 2;
+            pointer-events: none; z-index: 10;
+        }
+        #error {
+            display: none; position: fixed; top: 0; left: 0; right: 0;
+            background: #600; color: #fff; padding: 14px 20px; font-size: 13px;
+            z-index: 20; text-align: center;
+        }
+    </style>
+</head>
+<body>
+<div id="status">Loading nome.glb…</div>
+<div id="error"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }      from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader }     from 'three/addons/loaders/DRACOLoader.js';
+import { KTX2Loader }      from 'three/addons/loaders/KTX2Loader.js';
+import { MeshoptDecoder }  from 'three/addons/libs/meshopt_decoder.module.js';
+import { OrbitControls }   from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const status = document.getElementById('status');
+const errBox = document.getElementById('error');
+
+function showError(msg) {
+    errBox.textContent = '⚠ ' + msg;
+    errBox.style.display = 'block';
+    status.style.display = 'none';
+}
+
+// WebGL check
+try {
+    const test = document.createElement('canvas');
+    if (!test.getContext('webgl2') && !test.getContext('webgl')) throw new Error();
+} catch {
+    status.textContent = 'Your browser does not support WebGL.\nTry Chrome or Firefox with hardware acceleration enabled.';
+    throw new Error('No WebGL');
+}
+
+// Renderer
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.4;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// Scene
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111111);
+
+// Environment — fixes ALL PBR/metallic/glossy materials that appear black
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+// Lights from every angle — fixes unlit/lambert/phong materials
+const lights = [
+    [0xffffff, 2.0, [0, 10, 0]],
+    [0xffffff, 2.0, [10, 5, 10]],
+    [0xffffff, 1.5, [-10, 5, -10]],
+    [0xffffff, 1.5, [10, 5, -10]],
+    [0xffffff, 1.5, [-10, 5, 10]],
+];
+scene.add(new THREE.AmbientLight(0xffffff, 3));
+lights.forEach(([color, intensity, pos]) => {
+    const l = new THREE.DirectionalLight(color, intensity);
+    l.position.set(...pos);
+    scene.add(l);
+});
+
+// Camera
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.001, 10000);
+
+// Controls
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 3;
+controls.enablePan = false;
+
+// GLTF loader with ALL decoders (handles Draco, KTX2, Meshopt compressed GLBs)
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+
+const ktx2Loader = new KTX2Loader();
+ktx2Loader.setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/libs/basis/');
+ktx2Loader.detectSupport(renderer);
+
+const loader = new GLTFLoader();
+loader.setDRACOLoader(dracoLoader);
+loader.setKTX2Loader(ktx2Loader);
+loader.setMeshoptDecoder(MeshoptDecoder);
+
+loader.load(
+    'nome.glb',
+    (gltf) => {
+        const model = gltf.scene;
+
+        // Force all materials to be double-sided and fix color space
+        model.traverse((node) => {
+            if (node.isMesh) {
+                node.castShadow = true;
+                node.receiveShadow = true;
+                const mats = Array.isArray(node.material) ? node.material : [node.material];
+                mats.forEach((mat) => {
+                    mat.side = THREE.DoubleSide;
+                    mat.needsUpdate = true;
+                    // If material looks black, boost metalness/roughness to sensible values
+                    if (mat.metalness === 1 && mat.roughness === 0) {
+                        mat.metalness = 0.5;
+                        mat.roughness = 0.5;
+                    }
+                });
+            }
+        });
+
+        // Auto-center
+        const box = new THREE.Box3().setFromObject(model);
+        const center = box.getCenter(new THREE.Vector3());
+        model.position.sub(center);
+
+        // Auto-fit camera
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        camera.position.set(0, maxDim * 0.5, maxDim * 2.2);
+        camera.near = maxDim * 0.001;
+        camera.far = maxDim * 100;
+        camera.updateProjectionMatrix();
+        controls.minDistance = maxDim * 0.5;
+        controls.maxDistance = maxDim * 10;
+
+        scene.add(model);
+
+        // Play animations if any
+        if (gltf.animations.length > 0) {
+            const mixer = new THREE.AnimationMixer(model);
+            gltf.animations.forEach((clip) => mixer.clipAction(clip).play());
+            renderer.setAnimationLoop((t) => {
+                mixer.update(0.016);
+                controls.update();
+                renderer.render(scene, camera);
+            });
+        }
+
+        status.style.display = 'none';
+    },
+    (xhr) => {
+        if (xhr.total) {
+            status.textContent = `Loading… ${Math.round(xhr.loaded / xhr.total * 100)}%`;
+        }
+    },
+    (err) => {
+        console.error(err);
+        showError(
+            'Could not load nome.glb. ' +
+            (location.protocol === 'file:'
+                ? 'You cannot open this file:// directly — use GitHub Pages or a local server (VS Code Live Server / npx serve .).'
+                : 'Make sure nome.glb is in the same folder as this HTML file.')
+        );
+    }
+);
+
+// Resize
+window.addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+});
+
+// Render loop
+renderer.setAnimationLoop(() => {
+    controls.update();
+    renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
