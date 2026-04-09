@@ -49,7 +49,6 @@ function showError(msg) {
     status.style.display = 'none';
 }
 
-// WebGL check
 try {
     const test = document.createElement('canvas');
     if (!test.getContext('webgl2') && !test.getContext('webgl')) throw new Error();
@@ -58,8 +57,7 @@ try {
     throw new Error('No WebGL');
 }
 
-// Renderer
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -69,35 +67,26 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 document.body.appendChild(renderer.domElement);
 
-// Scene
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111111);
 
-// Environment — fixes ALL PBR/metallic/glossy materials that appear black
 const pmrem = new THREE.PMREMGenerator(renderer);
 pmrem.compileEquirectangularShader();
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 pmrem.dispose();
 
-// Lights from every angle — fixes unlit/lambert/phong materials
-const lights = [
-    [0xffffff, 2.0, [0, 10, 0]],
-    [0xffffff, 2.0, [10, 5, 10]],
-    [0xffffff, 1.5, [-10, 5, -10]],
-    [0xffffff, 1.5, [10, 5, -10]],
-    [0xffffff, 1.5, [-10, 5, 10]],
-];
 scene.add(new THREE.AmbientLight(0xffffff, 3));
-lights.forEach(([color, intensity, pos]) => {
-    const l = new THREE.DirectionalLight(color, intensity);
-    l.position.set(...pos);
+const lights = [
+    [0, 10, 0], [10, 5, 10], [-10, 5, -10], [10, 5, -10], [-10, 5, 10],
+];
+lights.forEach(([x, y, z]) => {
+    const l = new THREE.DirectionalLight(0xffffff, 2.0);
+    l.position.set(x, y, z);
     scene.add(l);
 });
 
-// Camera
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.001, 10000);
 
-// Controls
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
@@ -105,7 +94,6 @@ controls.autoRotate = true;
 controls.autoRotateSpeed = 3;
 controls.enablePan = false;
 
-// GLTF loader with ALL decoders (handles Draco, KTX2, Meshopt compressed GLBs)
 const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
 
@@ -118,35 +106,31 @@ loader.setDRACOLoader(dracoLoader);
 loader.setKTX2Loader(ktx2Loader);
 loader.setMeshoptDecoder(MeshoptDecoder);
 
+// Pale light gray material applied to every mesh
+const grayMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd8d8d8,
+    roughness: 0.6,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+});
+
 loader.load(
     'nome.glb',
     (gltf) => {
         const model = gltf.scene;
 
-        // Force all materials to be double-sided and fix color space
         model.traverse((node) => {
             if (node.isMesh) {
                 node.castShadow = true;
                 node.receiveShadow = true;
-                const mats = Array.isArray(node.material) ? node.material : [node.material];
-                mats.forEach((mat) => {
-                    mat.side = THREE.DoubleSide;
-                    mat.needsUpdate = true;
-                    // If material looks black, boost metalness/roughness to sensible values
-                    if (mat.metalness === 1 && mat.roughness === 0) {
-                        mat.metalness = 0.5;
-                        mat.roughness = 0.5;
-                    }
-                });
+                node.material = grayMaterial;
             }
         });
 
-        // Auto-center
         const box = new THREE.Box3().setFromObject(model);
         const center = box.getCenter(new THREE.Vector3());
         model.position.sub(center);
 
-        // Auto-fit camera
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z);
         camera.position.set(0, maxDim * 0.5, maxDim * 2.2);
@@ -158,11 +142,10 @@ loader.load(
 
         scene.add(model);
 
-        // Play animations if any
         if (gltf.animations.length > 0) {
             const mixer = new THREE.AnimationMixer(model);
             gltf.animations.forEach((clip) => mixer.clipAction(clip).play());
-            renderer.setAnimationLoop((t) => {
+            renderer.setAnimationLoop(() => {
                 mixer.update(0.016);
                 controls.update();
                 renderer.render(scene, camera);
@@ -172,29 +155,25 @@ loader.load(
         status.style.display = 'none';
     },
     (xhr) => {
-        if (xhr.total) {
-            status.textContent = `Loading… ${Math.round(xhr.loaded / xhr.total * 100)}%`;
-        }
+        if (xhr.total) status.textContent = `Loading… ${Math.round(xhr.loaded / xhr.total * 100)}%`;
     },
     (err) => {
         console.error(err);
         showError(
             'Could not load nome.glb. ' +
             (location.protocol === 'file:'
-                ? 'You cannot open this file:// directly — use GitHub Pages or a local server (VS Code Live Server / npx serve .).'
+                ? 'You cannot open this file:// directly — use GitHub Pages or a local server.'
                 : 'Make sure nome.glb is in the same folder as this HTML file.')
         );
     }
 );
 
-// Resize
 window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
 });
 
-// Render loop
 renderer.setAnimationLoop(() => {
     controls.update();
     renderer.render(scene, camera);
